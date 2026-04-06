@@ -3,6 +3,8 @@ import Sidebar from './components/Sidebar'
 import Header from './components/Header'
 import ConversationList from './components/ConversationList'
 import AddConversationModal from './components/AddConversationModal'
+import ImportModal from './components/ImportModal'
+import ChatPanel from './components/ChatPanel'
 
 const API_BASE = 'http://localhost:3001/api'
 
@@ -24,6 +26,12 @@ function App() {
   const [newTitle, setNewTitle] = useState('')
   const [newRole, setNewRole] = useState('未分类')
   const [newContent, setNewContent] = useState('')
+
+  // 导入弹窗状态
+  const [showImport, setShowImport] = useState(false)
+
+  // AI Chat 面板状态
+  const [showChat, setShowChat] = useState(false)
 
   useEffect(() => {
     fetchProjects()
@@ -128,6 +136,20 @@ function App() {
     }
   }
 
+  const handleImportComplete = (data) => {
+    // 导入完成后刷新当前对话列表
+    if (selectedProjectId) {
+      fetchConversations(selectedProjectId)
+    }
+  }
+
+  const handleChatNewMessage = () => {
+    // AI Chat 产生新消息后刷新对话列表
+    if (selectedProjectId) {
+      fetchConversations(selectedProjectId)
+    }
+  }
+
   const activeProject = projects.find(p => p.id === selectedProjectId)
 
   // 过滤逻辑
@@ -161,6 +183,8 @@ function App() {
           searchQuery={searchQuery}
           setSearchQuery={setSearchQuery}
           setShowAddConv={setShowAddConv}
+          setShowImport={setShowImport}
+          setShowChat={setShowChat}
         />
 
         <main className="flex-1 overflow-y-auto p-8">
@@ -186,6 +210,20 @@ function App() {
         newContent={newContent}
         setNewContent={setNewContent}
         handleAddConversation={handleAddConversation}
+      />
+
+      <ImportModal
+        show={showImport}
+        onClose={() => setShowImport(false)}
+        projectId={selectedProjectId}
+        onImportComplete={handleImportComplete}
+      />
+
+      <ChatPanel
+        show={showChat}
+        onClose={() => setShowChat(false)}
+        projectId={selectedProjectId}
+        onNewChat={handleChatNewMessage}
       />
     </div>
   )

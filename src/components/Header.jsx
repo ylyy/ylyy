@@ -4,7 +4,9 @@ export default function Header({
   conversationsCount,
   searchQuery,
   setSearchQuery,
-  setShowAddConv
+  setShowAddConv,
+  setShowImport,
+  setShowChat
 }) {
   return (
     <header className="h-16 bg-white border-b border-gray-200 px-8 flex items-center justify-between shadow-sm z-10 gap-x-4">
@@ -34,13 +36,29 @@ export default function Header({
       )}
 
       {activeProject && (
-        <button
-          onClick={() => setShowAddConv(true)}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all shadow-md shadow-indigo-100 flex items-center gap-2 whitespace-nowrap"
-        >
-          <span>+</span>
-          <span>记录新对话</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowChat(true)}
+            className="bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white px-3 py-2 rounded-lg text-sm font-medium transition-all shadow-md shadow-purple-100 flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <span>🤖</span>
+            <span>AI 对话</span>
+          </button>
+          <button
+            onClick={() => setShowImport(true)}
+            className="bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <span>📥</span>
+            <span>导入</span>
+          </button>
+          <button
+            onClick={() => setShowAddConv(true)}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-all shadow-md shadow-indigo-100 flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <span>+</span>
+            <span>手动记录</span>
+          </button>
+        </div>
       )}
     </header>
   )
