@@ -47,6 +47,22 @@ function App() {
 
   useEffect(() => { fetchProjects() }, [])
 
+  // 监听后端 Watcher 自动同步事件 (SSE)
+  useEffect(() => {
+    const evtSource = new EventSource(`${API_BASE}/events`);
+    evtSource.onmessage = (event) => {
+      if (event.data === 'update') {
+        console.log('🔄 后台自动同步数据，正在刷新列表...');
+        fetchProjects();
+        if (selectedProjectId) {
+          fetchConversations(selectedProjectId);
+        }
+      }
+    };
+    return () => evtSource.close();
+  }, [selectedProjectId]);
+
+
   useEffect(() => {
     if (selectedProjectId) {
       fetchConversations(selectedProjectId)

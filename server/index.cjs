@@ -8,12 +8,35 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const { scanClaudeSessions, getClaudeSessionMessages } = require('./importClaude.cjs');
 const { scanGeminiSessions, getGeminiSessionMessages } = require('./importGemini.cjs');
+const { scanCodexSessions, getCodexSessionMessages } = require('./importCodex.cjs');
+
 
 const app = express();
 const PORT = 3001;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// ── SSE 客户端管理 ─────────────────────────────────────────────
+const sseClients = new Set();
+app.get('/api/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+  
+  sseClients.add(res);
+  req.on('close', () => {
+    sseClients.delete(res);
+  });
+});
+
+const broadcastUpdate = () => {
+  sseClients.forEach(client => client.write('data: update\n\n'));
+};
+
+app.set('broadcastUpdate', broadcastUpdate);
+
 
 const db = new Database(path.join(__dirname, '..', 'ailog.db'));
 
@@ -70,12 +93,16 @@ function safeAddColumn(table, column, definition) {
 
 // conversations 表迁移
 safeAddColumn('conversations', 'source',   "TEXT DEFAULT 'manual'");
+safeAddColumn('conversations', 'external_id', "TEXT");
 safeAddColumn('conversations', 'messages', "TEXT DEFAULT '[]'");
 safeAddColumn('conversations', 'phase_id', "INTEGER REFERENCES phases(id)");
 safeAddColumn('conversations', 'role_id',  "INTEGER REFERENCES ai_roles(id)");
 safeAddColumn('conversations', 'status',   "TEXT DEFAULT 'active'");
 safeAddColumn('conversations', 'starred',  "INTEGER DEFAULT 0");
 safeAddColumn('conversations', 'summary',  "TEXT DEFAULT ''");
+safeAddColumn('conversations', 'updated_at', "TEXT");
+
+db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_external_id ON conversations(external_id)');
 
 // projects 表迁移
 safeAddColumn('projects', 'description', "TEXT DEFAULT ''");
@@ -254,7 +281,7 @@ app.get('/api/conversations', (req, res) => {
       LEFT JOIN ai_roles r ON c.role_id = r.id
       LEFT JOIN phases p ON c.phase_id = p.id
       ${where}
-      ORDER BY c.starred DESC, c.created_at DESC
+      ORDER BY c.starred DESC, COALESCE(c.updated_at, c.created_at) DESC
     `).all(...params);
     res.json(rows);
   } catch (err) {
@@ -370,7 +397,9 @@ app.get('/api/import/scan', (req, res) => {
   try {
     const claudeSessions = scanClaudeSessions();
     const geminiSessions = scanGeminiSessions();
-    res.json({ claude: claudeSessions, gemini: geminiSessions, total: claudeSessions.length + geminiSessions.length });
+    const codexSessions = scanCodexSessions();
+    const total = claudeSessions.length + geminiSessions.length + codexSessions.length;
+    res.json({ claude: claudeSessions, gemini: geminiSessions, codex: codexSessions, total });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -387,28 +416,50 @@ app.post('/api/import/execute', (req, res) => {
     if (!project) return res.status(404).json({ error: `项目 ${project_id} 不存在` });
 
     const inserted = [];
+    const updated = [];
     const insertStmt = db.prepare(
-      'INSERT INTO conversations (project_id, title, role_tag, content, source, messages, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO conversations (project_id, title, role_tag, content, source, messages, created_at, external_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     );
+    const updateStmt = db.prepare(
+      'UPDATE conversations SET messages = ?, content = ?, title = ?, updated_at = ? WHERE id = ?'
+    );
+    const getStmt = db.prepare('SELECT id FROM conversations WHERE external_id = ? AND external_id IS NOT NULL');
+
     const insertMany = db.transaction((items) => {
       for (const session of items) {
         let parsed;
         if (session.source === 'import-claude') parsed = getClaudeSessionMessages(session.filePath);
         else if (session.source === 'import-gemini') parsed = getGeminiSessionMessages(session.filePath);
+        else if (session.source === 'import-codex') parsed = getCodexSessionMessages(session.filePath); // Assume we'll add this
         else continue;
+        
         const messages = parsed.messages;
         if (messages.length === 0) continue;
+        
         const preview = messages.slice(0, 4).map(m =>
           `[${m.role === 'user' ? '用户' : 'AI'}] ${m.content.substring(0, 200)}`
         ).join('\n\n');
-        const roleTag = session.source === 'import-claude' ? 'Claude' : 'Gemini';
+        
+        const roleTag = session.source.replace('import-', ''); 
         const createdAt = session.timestamp || new Date().toISOString();
-        const info = insertStmt.run(project_id, session.title, roleTag, preview, session.source, JSON.stringify(messages), createdAt);
+        const externalId = session.sessionId || null;
+
+        if (externalId) {
+          const existing = getStmt.get(externalId);
+          if (existing) {
+            updateStmt.run(JSON.stringify(messages), preview, session.title, new Date().toISOString(), existing.id);
+            updated.push({ id: existing.id, title: session.title, messageCount: messages.length });
+            continue;
+          }
+        }
+
+        const info = insertStmt.run(project_id, session.title, roleTag, preview, session.source, JSON.stringify(messages), createdAt, externalId);
         inserted.push({ id: Number(info.lastInsertRowid), title: session.title, messageCount: messages.length });
       }
     });
     insertMany(sessions);
-    res.json({ success: true, imported: inserted.length, details: inserted });
+    res.json({ success: true, imported: inserted.length, updated: updated.length, details: { inserted, updated } });
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -458,6 +509,16 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// ── 启动服务与 Watcher ──────────────────────────────────────────
+
 app.listen(PORT, () => {
   console.log(`🚀 AI Log 后端 v1.0 已启动：http://localhost:${PORT}`);
+  
+  // 启动后台 Watcher
+  try {
+    const { startWatcher } = require('./watcher.cjs');
+    startWatcher(db, broadcastUpdate);
+  } catch (err) {
+    console.error('Watcher startup failed (is chokidar installed?):', err.message);
+  }
 });
